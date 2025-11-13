@@ -87,3 +87,4 @@ This project was improved by simulating a team of specialized AI agents:
 -   **`finops-analyst`**: Added the historical trend analysis feature and produced the summary of findings.
 -   **`ux-designer` & `finops-dashboard-developer`**: Redesigned the UI for better usability and a more professional aesthetic.
 -   **`project-organizer`**: Updated this README and ensured the project structure is logical and well-documented.
+# cloud-eco-activity-w-10
