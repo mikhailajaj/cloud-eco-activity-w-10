@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from modules.data_loader import load_data
 from modules.data_validator import validate_cloudmart_data
+from modules.report_generator import generate_report_data
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -236,19 +237,67 @@ def show_compliance_analysis_page(df_clean, metrics):
     
     # Compliance heatmap by service and department
     st.subheader("🔥 Compliance Heatmap")
+    
+    # Debug: Show raw compliance data
+    st.write("**Debug: Raw Compliance Data**")
     heatmap_data = df_clean.groupby(['Service', 'Department']).agg({
         'Tagged': lambda x: (x == 'Yes').sum() / len(x) * 100,
         'ResourceID': 'count'
     }).reset_index()
-    heatmap_data = heatmap_data[heatmap_data['ResourceID'] >= 2]  # Filter small groups
+    st.dataframe(heatmap_data.head(10))
+    
+    # Use a lower threshold for filtering (only exclude single-resource groups)
+    heatmap_data = heatmap_data[heatmap_data['ResourceID'] >= 1]  # Keep all groups
     
     if len(heatmap_data) > 0:
         heatmap_pivot = heatmap_data.pivot(index='Service', columns='Department', values='Tagged')
+        
+        # Calculate actual min and max values for proper scaling
+        min_compliance = heatmap_pivot.min().min()
+        max_compliance = heatmap_pivot.max().max()
+        
+        # Create heatmap with proper scaling
         fig_heatmap = px.imshow(heatmap_pivot, 
-                              title='Tag Compliance by Service & Department (%)',
+                              title=f'Tag Compliance by Service & Department (%) - Range: {min_compliance:.1f}% to {max_compliance:.1f}%',
                               color_continuous_scale='RdYlGn',
-                              aspect='auto')
+                              aspect='auto',
+                              zmin=min_compliance,
+                              zmax=max_compliance,
+                              labels={'color': 'Compliance %'})
+        
+        # Add text annotations showing the actual values
+        fig_heatmap.update_traces(
+            text=heatmap_pivot.round(1).astype(str) + '%',
+            texttemplate='%{text}',
+            textfont={"size": 10},
+            showscale=True
+        )
+        
+        # Improve layout
+        fig_heatmap.update_layout(
+            title_x=0.5,
+            xaxis_title="Department",
+            yaxis_title="Service",
+            coloraxis_colorbar=dict(
+                title="Compliance Rate (%)",
+                title_side="right"
+            )
+        )
+        
         st.plotly_chart(fig_heatmap, use_container_width=True)
+        
+        # Add summary statistics below the heatmap
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Minimum Compliance", f"{min_compliance:.1f}%")
+        with col2:
+            st.metric("Maximum Compliance", f"{max_compliance:.1f}%")
+        with col3:
+            avg_compliance = heatmap_pivot.mean().mean()
+            st.metric("Average Compliance", f"{avg_compliance:.1f}%")
+        with col4:
+            compliance_range = max_compliance - min_compliance
+            st.metric("Compliance Range", f"{compliance_range:.1f}%")
 
 def show_remediation_workflow_page(df_clean):
     """Remediation Workflow page - Task Set 5 implementation (REQ-021 to REQ-025)"""
@@ -458,6 +507,198 @@ def show_remediation_workflow_page(df_clean):
         st.success("🔄 Reset complete! All changes reverted.")
         st.rerun()
 
+def show_reports_page(df_clean, metrics):
+    """Reports page - Automated report generation and exports"""
+    st.header("📋 Reports & Documentation")
+    st.markdown("**Automated FinOps governance reports and data exports**")
+    
+    # Generate report data
+    with st.spinner("Generating comprehensive reports..."):
+        report_data = generate_report_data(df_clean, metrics)
+    
+    # Key report metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Report Sections", "4")
+    with col2:
+        untagged_count = len(df_clean[df_clean['Tagged'] == 'No'])
+        st.metric("Untagged Resources", f"{untagged_count:,}")
+    with col3:
+        total_cost = df_clean['MonthlyCostUSD'].sum()
+        st.metric("Total Monthly Cost", f"${total_cost:,.2f}")
+    with col4:
+        compliance_rate = metrics.get('compliance_rate', 0)
+        st.metric("Compliance Rate", f"{compliance_rate:.1f}%")
+    
+    # Report tabs
+    tab1, tab2, tab3 = st.tabs(["📊 Executive Report", "📥 Data Exports", "📈 Quick Insights"])
+    
+    with tab1:
+        st.subheader("📋 Executive Summary Report")
+        st.markdown("Complete FinOps governance analysis with recommendations")
+        
+        # Display the markdown report
+        st.markdown(report_data['markdown_report'])
+        
+        # Download full report
+        st.download_button(
+            label="📄 Download Full Report (Markdown)",
+            data=report_data['markdown_report'],
+            file_name=f"cloudmart_finops_report_{report_data['generation_timestamp']}.md",
+            mime="text/markdown",
+            help="Download the complete FinOps governance report in Markdown format",
+            type="primary"
+        )
+    
+    with tab2:
+        st.subheader("📥 Data Export Center")
+        st.markdown("Download specific datasets for further analysis and remediation")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("### 🚨 Untagged Resources")
+            untagged_count = len(df_clean[df_clean['Tagged'] == 'No'])
+            st.write(f"Export {untagged_count} untagged resources for immediate remediation")
+            
+            st.download_button(
+                label="📥 Download Untagged Resources",
+                data=report_data['untagged_csv'],
+                file_name=f"untagged_resources_{report_data['generation_timestamp']}.csv",
+                mime="text/csv",
+                help="Resources requiring immediate tag remediation"
+            )
+            
+            st.markdown("### 📊 Compliance Summary")
+            st.write("Department-level compliance metrics and costs")
+            
+            st.download_button(
+                label="📥 Download Compliance Summary",
+                data=report_data['compliance_csv'],
+                file_name=f"compliance_summary_{report_data['generation_timestamp']}.csv",
+                mime="text/csv",
+                help="Department compliance rates and untagged costs"
+            )
+        
+        with col2:
+            st.markdown("### 🔍 Enhanced Dataset")
+            st.write("Complete dataset with calculated compliance scores and risk categories")
+            
+            st.download_button(
+                label="📥 Download Enhanced Analysis",
+                data=report_data['full_analysis_csv'],
+                file_name=f"enhanced_cloudmart_analysis_{report_data['generation_timestamp']}.csv",
+                mime="text/csv",
+                help="Full dataset with tag completeness scores and risk analysis"
+            )
+            
+            st.markdown("### 📋 Report Package")
+            st.write("All reports and data files in a single download")
+            
+            # Create a summary of all available downloads
+            downloads_summary = f"""
+# CloudMart FinOps Report Package
+Generated: {report_data['generation_timestamp']}
+
+## Included Files:
+1. Executive Report (Markdown)
+2. Untagged Resources (CSV)
+3. Compliance Summary (CSV)  
+4. Enhanced Analysis (CSV)
+
+## Key Metrics:
+- Total Resources: {len(df_clean):,}
+- Untagged Resources: {untagged_count:,}
+- Compliance Rate: {compliance_rate:.1f}%
+- Total Monthly Cost: ${total_cost:,.2f}
+"""
+            
+            st.download_button(
+                label="📦 Download Report Summary",
+                data=downloads_summary,
+                file_name=f"report_package_summary_{report_data['generation_timestamp']}.txt",
+                mime="text/plain",
+                help="Summary of all available reports and exports"
+            )
+    
+    with tab3:
+        st.subheader("📈 Quick Insights Dashboard")
+        st.markdown("Key findings and actionable recommendations")
+        
+        # Quick insights based on data analysis
+        total_resources = len(df_clean)
+        untagged_resources = len(df_clean[df_clean['Tagged'] == 'No'])
+        untagged_cost = df_clean[df_clean['Tagged'] == 'No']['MonthlyCostUSD'].sum()
+        total_cost = df_clean['MonthlyCostUSD'].sum()
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 🎯 Priority Actions")
+            
+            # Most expensive untagged resources
+            if untagged_resources > 0:
+                expensive_untagged = df_clean[df_clean['Tagged'] == 'No'].nlargest(5, 'MonthlyCostUSD')
+                st.markdown("**🚨 Most Expensive Untagged Resources:**")
+                for _, row in expensive_untagged.iterrows():
+                    st.write(f"• {row['ResourceID']} ({row['Service']}) - ${row['MonthlyCostUSD']:,.2f}/month")
+            
+            # Worst performing departments
+            if 'Department' in df_clean.columns:
+                dept_untagged = df_clean[df_clean['Tagged'] == 'No'].groupby('Department')['MonthlyCostUSD'].sum().sort_values(ascending=False)
+                if len(dept_untagged) > 0:
+                    st.markdown("**🏢 Departments Needing Focus:**")
+                    for dept, cost in dept_untagged.head(3).items():
+                        st.write(f"• {dept}: ${cost:,.2f}/month untagged")
+        
+        with col2:
+            st.markdown("#### 📊 Success Metrics")
+            
+            # Calculate compliance improvements needed
+            target_compliance = 95
+            current_compliance = (total_resources - untagged_resources) / total_resources * 100
+            resources_to_tag = max(0, total_resources - int(total_resources * target_compliance / 100))
+            
+            st.metric("Current Compliance", f"{current_compliance:.1f}%")
+            st.metric("Target Compliance", f"{target_compliance}%")
+            st.metric("Resources to Tag", f"{resources_to_tag}")
+            
+            # ROI calculation
+            annual_untagged = untagged_cost * 12
+            st.markdown(f"**💰 Annual Cost Visibility Gap:** ${annual_untagged:,.2f}")
+            
+            if untagged_cost > 0:
+                # Assume 15% cost optimization potential once tagged
+                potential_savings = annual_untagged * 0.15
+                st.markdown(f"**💡 Potential Annual Savings:** ${potential_savings:,.2f}")
+        
+        # Action recommendations based on data
+        st.markdown("#### 🎯 Recommended Next Steps")
+        
+        recommendations = []
+        
+        if untagged_resources > total_resources * 0.5:
+            recommendations.append("🚨 **Critical**: >50% resources untagged - Implement emergency tagging campaign")
+        
+        if 'CreatedBy' in df_clean.columns:
+            manual_untagged = len(df_clean[(df_clean['CreatedBy'] == 'Manual') & (df_clean['Tagged'] == 'No')])
+            if manual_untagged > 0:
+                recommendations.append(f"⚙️ **Process**: {manual_untagged} manually-created resources are untagged - Implement IaC governance")
+        
+        if 'Environment' in df_clean.columns:
+            prod_untagged = len(df_clean[(df_clean['Environment'] == 'Prod') & (df_clean['Tagged'] == 'No')])
+            if prod_untagged > 0:
+                recommendations.append(f"🔴 **Production Risk**: {prod_untagged} production resources untagged - High priority remediation needed")
+        
+        if untagged_cost > total_cost * 0.3:
+            recommendations.append("💰 **Financial**: >30% of costs untrackable - Implement immediate chargeback policies")
+        
+        if len(recommendations) == 0:
+            recommendations.append("✅ **Excellent**: Low risk detected - Focus on maintaining current compliance levels")
+        
+        for rec in recommendations:
+            st.write(rec)
+
 # --- Main Application ---
 def main():
     st.title("💰 CloudMart FinOps Dashboard")
@@ -486,7 +727,7 @@ def main():
     st.sidebar.markdown("---")
     
     page = st.sidebar.radio("Select Dashboard Section:", [
-        "📊 Overview", "💰 Cost Analysis", "🛡️ Compliance", "🔧 Remediation"
+        "📊 Overview", "💰 Cost Analysis", "🛡️ Compliance", "🔧 Remediation", "📋 Reports"
     ])
     
     # --- Data Loading & Validation ---
@@ -510,6 +751,8 @@ def main():
         show_compliance_analysis_page(df_clean, metrics)
     elif page == "🔧 Remediation":
         show_remediation_workflow_page(df_clean)
+    elif page == "📋 Reports":
+        show_reports_page(df_clean, metrics)
 
 if __name__ == "__main__":
     main()
