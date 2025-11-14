@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from modules.data_loader import load_data
 from modules.data_validator import validate_cloudmart_data
 from modules.report_generator import generate_report_data
+from modules.menu_config import get_dashboard_sections, get_filter_groups, get_quick_presets, get_export_config, get_ui_config
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -90,6 +91,15 @@ def show_overview_page(df_clean, metrics):
     """Overview/Summary page with key metrics and validation results"""
     st.header("📊 Overview & Data Quality")
     
+    # Check if filters are applied and show comparison
+    original_total = metrics.get('original_records', len(df_clean))
+    filtered_total = len(df_clean)
+    filters_applied = original_total != filtered_total
+    
+    if filters_applied:
+        st.info(f"🎯 **Filtered View**: Displaying {filtered_total:,} of {original_total:,} total resources")
+    
+    # Main metrics row
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Resources", f"{metrics['total_resources']:,}")
@@ -100,15 +110,100 @@ def show_overview_page(df_clean, metrics):
     with col4:
         st.metric("Data Quality Score", f"{metrics['data_quality_score']:.1f}%")
     
+    # Filter Impact Analysis (if filters are applied)
+    if filters_applied:
+        st.subheader("🎯 Filter Impact Analysis")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Create filter impact summary
+            st.markdown("**📊 Current Filter Results:**")
+            
+            # Tag compliance in filtered data
+            tagged_count = len(df_clean[df_clean['Tagged'] == 'Yes'])
+            untagged_count = len(df_clean[df_clean['Tagged'] == 'No'])
+            
+            st.write(f"• **Tagged Resources:** {tagged_count:,}")
+            st.write(f"• **Untagged Resources:** {untagged_count:,}")
+            
+            # Cost breakdown
+            total_cost = df_clean['MonthlyCostUSD'].sum()
+            untagged_cost = df_clean[df_clean['Tagged'] == 'No']['MonthlyCostUSD'].sum()
+            st.write(f"• **Total Filtered Cost:** ${total_cost:,.2f}")
+            st.write(f"• **Untagged Cost:** ${untagged_cost:,.2f}")
+            
+            # Department breakdown (if available)
+            if 'Department' in df_clean.columns and not df_clean['Department'].isna().all():
+                dept_counts = df_clean['Department'].value_counts()
+                st.write(f"• **Top Department:** {dept_counts.index[0]} ({dept_counts.iloc[0]} resources)")
+        
+        with col2:
+            # Service and environment breakdown
+            st.markdown("**☁️ Resource Distribution:**")
+            
+            if 'Service' in df_clean.columns:
+                service_counts = df_clean['Service'].value_counts()
+                st.write(f"• **Top Service:** {service_counts.index[0]} ({service_counts.iloc[0]} resources)")
+            
+            if 'Environment' in df_clean.columns and not df_clean['Environment'].isna().all():
+                env_counts = df_clean['Environment'].value_counts()
+                st.write(f"• **Top Environment:** {env_counts.index[0]} ({env_counts.iloc[0]} resources)")
+            
+            if 'Region' in df_clean.columns:
+                region_counts = df_clean['Region'].value_counts()
+                st.write(f"• **Top Region:** {region_counts.index[0]} ({region_counts.iloc[0]} resources)")
+            
+            # Cost efficiency metric
+            avg_cost = df_clean['MonthlyCostUSD'].mean()
+            st.write(f"• **Avg Cost/Resource:** ${avg_cost:.2f}")
+    
     # Show processing information based on duplicate handling setting
+    st.subheader("⚙️ Data Processing Status")
     if metrics.get('duplicates_removed', True):
-        st.info(f"✅ Processed {metrics['original_records']} records, removed {metrics['duplicate_records']} duplicates")
+        st.success(f"✅ Processed {metrics['original_records']} records, removed {metrics['duplicate_records']} duplicates")
     else:
         st.warning(f"⚠️ Processed {metrics['original_records']} records, kept {metrics['duplicate_records']} duplicates (intentional)")
     
     # Show processing note if available
     if 'processing_note' in metrics:
         st.caption(f"📋 {metrics['processing_note']}")
+    
+    # Quick insights for filtered data
+    if len(df_clean) > 0:
+        st.subheader("💡 Quick Insights")
+        
+        insights = []
+        
+        # Compliance insights
+        compliance_rate = metrics.get('compliance_rate', 0)
+        if compliance_rate < 50:
+            insights.append("🚨 **Critical:** Less than 50% of resources are properly tagged")
+        elif compliance_rate < 80:
+            insights.append("⚠️ **Warning:** Tagging compliance below industry best practice (80%)")
+        else:
+            insights.append("✅ **Good:** Tagging compliance meets or exceeds best practices")
+        
+        # Cost insights
+        total_cost = metrics.get('total_monthly_cost', 0)
+        if total_cost > 1000:
+            insights.append(f"💰 **High Impact:** ${total_cost:,.2f}/month in scope - significant cost visibility opportunity")
+        
+        # Environment insights
+        if 'Environment' in df_clean.columns:
+            prod_resources = len(df_clean[df_clean['Environment'] == 'Prod'])
+            prod_untagged = len(df_clean[(df_clean['Environment'] == 'Prod') & (df_clean['Tagged'] == 'No')])
+            if prod_untagged > 0:
+                insights.append(f"🔴 **Production Risk:** {prod_untagged} production resources are untagged")
+        
+        # Manual creation insights
+        if 'CreatedBy' in df_clean.columns:
+            manual_resources = len(df_clean[df_clean['CreatedBy'] == 'Manual'])
+            if manual_resources > 0:
+                insights.append(f"⚙️ **Process Gap:** {manual_resources} resources created manually (recommend IaC)")
+        
+        for insight in insights[:3]:  # Show top 3 insights
+            st.write(insight)
 
 def show_cost_analysis_page(df_clean):
     """Cost Analysis page with interactive visualizations (CHUNK 3)"""
@@ -507,6 +602,250 @@ def show_remediation_workflow_page(df_clean):
         st.success("🔄 Reset complete! All changes reverted.")
         st.rerun()
 
+def show_nan_analytics_modal(df_original):
+    """Display comprehensive NaN analytics with visualizations"""
+    st.header("🔍 Missing Data Analytics Dashboard")
+    st.markdown("**Comprehensive analysis of missing values across all data fields**")
+    
+    # Calculate missing data statistics for all columns
+    missing_stats = []
+    total_records = len(df_original)
+    
+    for column in df_original.columns:
+        missing_count = df_original[column].isna().sum()
+        missing_pct = (missing_count / total_records) * 100
+        data_type = str(df_original[column].dtype)
+        missing_stats.append({
+            'Field': column,
+            'Missing Count': missing_count,
+            'Missing %': missing_pct,
+            'Data Type': data_type,
+            'Valid Values': total_records - missing_count
+        })
+    
+    missing_df = pd.DataFrame(missing_stats).sort_values('Missing Count', ascending=False)
+    
+    # Overview metrics
+    st.subheader("📊 Missing Data Overview")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_missing = missing_df['Missing Count'].sum()
+        st.metric("Total Missing Values", f"{total_missing:,}")
+    
+    with col2:
+        fields_with_missing = len(missing_df[missing_df['Missing Count'] > 0])
+        st.metric("Fields with Missing Data", f"{fields_with_missing}")
+    
+    with col3:
+        worst_field = missing_df.iloc[0]['Field'] if len(missing_df) > 0 else "None"
+        worst_pct = missing_df.iloc[0]['Missing %'] if len(missing_df) > 0 else 0
+        st.metric("Worst Field", f"{worst_field}", f"{worst_pct:.1f}% missing")
+    
+    with col4:
+        complete_records = len(df_original.dropna())
+        completeness = (complete_records / total_records) * 100
+        st.metric("Complete Records", f"{complete_records:,}", f"{completeness:.1f}%")
+    
+    # Visualizations
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 Missing Data Chart", "🎯 Field Analysis", "🔍 Pattern Analysis", "📋 Detailed Report"])
+    
+    with tab1:
+        st.subheader("📈 Missing Values by Field")
+        
+        # Bar chart of missing values
+        fig_missing = px.bar(
+            missing_df[missing_df['Missing Count'] > 0], 
+            x='Field', 
+            y='Missing Count',
+            color='Missing %',
+            color_continuous_scale='Reds',
+            title='Missing Values Count by Field',
+            labels={'Missing Count': 'Number of Missing Values'}
+        )
+        fig_missing.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig_missing, use_container_width=True)
+        
+        # Pie chart of missing vs complete data
+        missing_summary = pd.DataFrame({
+            'Status': ['Complete Data', 'Missing Data'],
+            'Count': [
+                (total_records * len(df_original.columns)) - total_missing,
+                total_missing
+            ]
+        })
+        
+        fig_pie = px.pie(
+            missing_summary, 
+            values='Count', 
+            names='Status',
+            title='Overall Data Completeness',
+            color_discrete_map={'Complete Data': '#2E8B57', 'Missing Data': '#DC143C'}
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+    
+    with tab2:
+        st.subheader("🎯 Field-by-Field Analysis")
+        
+        # Show detailed table
+        st.dataframe(missing_df, hide_index=True, use_container_width=True)
+        
+        # Focus on cost field specifically
+        if 'MonthlyCostUSD' in df_original.columns:
+            st.subheader("💰 Cost Field Deep Dive")
+            cost_missing = df_original[df_original['MonthlyCostUSD'].isna()]
+            
+            if len(cost_missing) > 0:
+                st.write(f"**{len(cost_missing)} resources** have missing cost data:")
+                
+                # Show the resources with missing costs
+                display_cols = ['ResourceID', 'Service', 'Region', 'Department', 'Environment', 'Tagged']
+                available_cols = [col for col in display_cols if col in cost_missing.columns]
+                st.dataframe(cost_missing[available_cols], hide_index=True)
+                
+                # Analyze patterns in missing cost data
+                if 'Service' in cost_missing.columns:
+                    service_missing = cost_missing['Service'].value_counts()
+                    if len(service_missing) > 0:
+                        st.write("**Missing costs by service:**")
+                        for service, count in service_missing.head().items():
+                            st.write(f"• {service}: {count} resources")
+                
+                if 'Department' in cost_missing.columns:
+                    dept_missing = cost_missing['Department'].value_counts()
+                    if len(dept_missing) > 0:
+                        st.write("**Missing costs by department:**")
+                        for dept, count in dept_missing.head().items():
+                            st.write(f"• {dept}: {count} resources")
+    
+    with tab3:
+        st.subheader("🔍 Missing Data Patterns")
+        
+        # Correlation analysis of missing values
+        missing_matrix = df_original.isnull().astype(int)
+        correlation_missing = missing_matrix.corr()
+        
+        # Heatmap of missing data correlations
+        fig_heatmap = px.imshow(
+            correlation_missing,
+            title='Missing Data Correlation Matrix',
+            color_continuous_scale='RdBu',
+            aspect='auto'
+        )
+        fig_heatmap.update_layout(
+            title_x=0.5,
+            xaxis_title="Fields",
+            yaxis_title="Fields"
+        )
+        st.plotly_chart(fig_heatmap, use_container_width=True)
+        
+        # Missing data combinations
+        st.subheader("📊 Common Missing Data Combinations")
+        
+        # Find records with multiple missing fields
+        missing_counts_per_record = df_original.isnull().sum(axis=1)
+        missing_distribution = missing_counts_per_record.value_counts().sort_index()
+        
+        fig_dist = px.bar(
+            x=missing_distribution.index,
+            y=missing_distribution.values,
+            title='Distribution of Missing Fields per Record',
+            labels={'x': 'Number of Missing Fields', 'y': 'Number of Records'}
+        )
+        st.plotly_chart(fig_dist, use_container_width=True)
+        
+        # Show records with most missing data
+        worst_records = df_original[missing_counts_per_record == missing_counts_per_record.max()]
+        if len(worst_records) > 0:
+            st.write(f"**Records with most missing data ({missing_counts_per_record.max()} fields missing):**")
+            st.dataframe(worst_records[['ResourceID', 'Service'] + [col for col in df_original.columns if col not in ['ResourceID', 'Service']]], hide_index=True)
+    
+    with tab4:
+        st.subheader("📋 Detailed Missing Data Report")
+        
+        # Generate actionable insights
+        st.markdown("### 🎯 Key Findings:")
+        
+        insights = []
+        
+        # Field-specific insights
+        for _, row in missing_df.head(5).iterrows():
+            if row['Missing Count'] > 0:
+                insights.append(f"• **{row['Field']}**: {row['Missing Count']} missing values ({row['Missing %']:.1f}%)")
+        
+        # Data quality insights
+        if completeness < 50:
+            insights.append("🚨 **Critical**: Less than 50% of records are complete")
+        elif completeness < 80:
+            insights.append("⚠️ **Warning**: Data completeness below recommended 80%")
+        else:
+            insights.append("✅ **Good**: Data completeness meets quality standards")
+        
+        # Cost-specific insights
+        if 'MonthlyCostUSD' in df_original.columns:
+            cost_missing_pct = (df_original['MonthlyCostUSD'].isna().sum() / total_records) * 100
+            if cost_missing_pct > 0:
+                insights.append(f"💰 **Cost Impact**: {cost_missing_pct:.1f}% of resources have unknown costs")
+        
+        for insight in insights:
+            st.write(insight)
+        
+        # Recommendations
+        st.markdown("### 💡 Recommendations:")
+        
+        recommendations = []
+        
+        if fields_with_missing > 3:
+            recommendations.append("🔧 **Data Collection**: Review data collection processes for multiple fields")
+        
+        if 'MonthlyCostUSD' in missing_df['Field'].values:
+            cost_missing_count = missing_df[missing_df['Field'] == 'MonthlyCostUSD']['Missing Count'].iloc[0]
+            if cost_missing_count > 0:
+                recommendations.append(f"💰 **Cost Tracking**: Implement cost monitoring for {cost_missing_count} resources")
+        
+        if completeness < 80:
+            recommendations.append("📊 **Data Quality**: Establish data quality monitoring and validation rules")
+        
+        recommendations.append("🔄 **Regular Audits**: Schedule monthly data completeness reviews")
+        
+        for rec in recommendations:
+            st.write(rec)
+        
+        # Export options
+        st.subheader("📥 Export Missing Data Analysis")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Export missing data summary
+            summary_csv = missing_df.to_csv(index=False)
+            st.download_button(
+                label="📊 Download Missing Data Summary",
+                data=summary_csv,
+                file_name="missing_data_analysis.csv",
+                mime="text/csv",
+                help="Download summary of missing data by field"
+            )
+        
+        with col2:
+            # Export records with missing cost data
+            if 'MonthlyCostUSD' in df_original.columns:
+                cost_missing_records = df_original[df_original['MonthlyCostUSD'].isna()]
+                if len(cost_missing_records) > 0:
+                    cost_missing_csv = cost_missing_records.to_csv(index=False)
+                    st.download_button(
+                        label="💰 Download Missing Cost Records",
+                        data=cost_missing_csv,
+                        file_name="missing_cost_resources.csv",
+                        mime="text/csv",
+                        help="Download resources with missing cost data"
+                    )
+    
+    # Close button
+    if st.button("✅ Close Analytics", type="primary"):
+        st.session_state.show_nan_analytics = False
+        st.rerun()
+
 def show_reports_page(df_clean, metrics):
     """Reports page - Automated report generation and exports"""
     st.header("📋 Reports & Documentation")
@@ -699,6 +1038,74 @@ Generated: {report_data['generation_timestamp']}
         for rec in recommendations:
             st.write(rec)
 
+# --- Advanced Filtering Function ---
+def apply_advanced_filters(df, departments, projects, environments, services, regions, 
+                         created_by, owners, cost_centers, tagging_status, cost_range, include_nan_costs=False):
+    """
+    Apply advanced filters to the dataset based on user selections.
+    Supports all tag fields mentioned in taging_info.md requirements.
+    """
+    filtered_df = df.copy()
+    
+    # Department filter
+    if departments and 'All' not in departments:
+        filtered_df = filtered_df[filtered_df['Department'].isin(departments)]
+    
+    # Project filter  
+    if projects and 'All' not in projects:
+        filtered_df = filtered_df[filtered_df['Project'].isin(projects)]
+    
+    # Environment filter
+    if environments and 'All' not in environments:
+        filtered_df = filtered_df[filtered_df['Environment'].isin(environments)]
+    
+    # Service filter
+    if services and 'All' not in services:
+        filtered_df = filtered_df[filtered_df['Service'].isin(services)]
+    
+    # Region filter
+    if regions and 'All' not in regions:
+        filtered_df = filtered_df[filtered_df['Region'].isin(regions)]
+    
+    # CreatedBy filter
+    if created_by and 'All' not in created_by:
+        filtered_df = filtered_df[filtered_df['CreatedBy'].isin(created_by)]
+    
+    # Owner filter
+    if owners and 'All' not in owners:
+        filtered_df = filtered_df[filtered_df['Owner'].isin(owners)]
+    
+    # Cost Center filter
+    if cost_centers and 'All' not in cost_centers:
+        filtered_df = filtered_df[filtered_df['CostCenter'].isin(cost_centers)]
+    
+    # Tagging status filter
+    if tagging_status == 'Tagged Only':
+        filtered_df = filtered_df[filtered_df['Tagged'] == 'Yes']
+    elif tagging_status == 'Untagged Only':
+        filtered_df = filtered_df[filtered_df['Tagged'] == 'No']
+    
+    # Cost range filter - handle NaN values based on user preference
+    if cost_range and len(cost_range) == 2:
+        min_cost, max_cost = cost_range
+        
+        if include_nan_costs:
+            # Include both valid costs in range AND NaN values
+            filtered_df = filtered_df[
+                (filtered_df['MonthlyCostUSD'].isna()) |
+                ((filtered_df['MonthlyCostUSD'] >= min_cost) & 
+                 (filtered_df['MonthlyCostUSD'] <= max_cost))
+            ]
+        else:
+            # Only include valid costs in range, exclude NaN values
+            filtered_df = filtered_df[
+                filtered_df['MonthlyCostUSD'].notna() &
+                (filtered_df['MonthlyCostUSD'] >= min_cost) & 
+                (filtered_df['MonthlyCostUSD'] <= max_cost)
+            ]
+    
+    return filtered_df
+
 # --- Main Application ---
 def main():
     st.title("💰 CloudMart FinOps Dashboard")
@@ -706,6 +1113,17 @@ def main():
     
     # --- Sidebar Navigation and Controls (REQ-020, REQ-021) ---
     st.sidebar.title("🧭 Navigation")
+    
+    # Main Dashboard Navigation - Moved to top with Missing Data Analytics
+    dashboard_sections = [
+        "📊 Overview", 
+        "💰 Cost Analysis", 
+        "🛡️ Compliance", 
+        "🔧 Remediation", 
+        "🔍 Missing Data Analytics",
+        "📋 Reports"
+    ]
+    page = st.sidebar.radio("Select Dashboard Section:", dashboard_sections)
     
     # Data Processing Options
     st.sidebar.markdown("---")
@@ -726,20 +1144,268 @@ def main():
     
     st.sidebar.markdown("---")
     
-    page = st.sidebar.radio("Select Dashboard Section:", [
-        "📊 Overview", "💰 Cost Analysis", "🛡️ Compliance", "🔧 Remediation", "📋 Reports"
-    ])
+    # --- ENHANCED FILTERING SECTION ---
+    st.sidebar.subheader("🎯 Advanced Filters")
     
-    # --- Data Loading & Validation ---
+    # Get data for filter options (without validation for filter setup)
+    df_temp = load_data("./data/cloudmart_multi_account_cleaned.csv")
+    
+    # Multi-select filters based on tagging_info.md requirements
+    st.sidebar.markdown("**Core Governance Filters:**")
+    
+    # Department filter
+    departments = ['All'] + sorted(df_temp['Department'].dropna().unique().tolist()) if df_temp is not None and 'Department' in df_temp.columns else ['All']
+    selected_departments = st.sidebar.multiselect(
+        "🏢 Department", 
+        departments,
+        default=['All'],
+        help="Filter by business unit (Marketing, Sales, Analytics, etc.)"
+    )
+    
+    # Project filter
+    projects = ['All'] + sorted(df_temp['Project'].dropna().unique().tolist()) if df_temp is not None and 'Project' in df_temp.columns else ['All']
+    selected_projects = st.sidebar.multiselect(
+        "📋 Project",
+        projects,
+        default=['All'],
+        help="Filter by application or project name"
+    )
+    
+    # Environment filter
+    environments = ['All'] + sorted(df_temp['Environment'].dropna().unique().tolist()) if df_temp is not None and 'Environment' in df_temp.columns else ['All']
+    selected_environments = st.sidebar.multiselect(
+        "🌍 Environment",
+        environments,
+        default=['All'],
+        help="Filter by environment type (Prod, Dev, Test)"
+    )
+    
+    # Service filter
+    services = ['All'] + sorted(df_temp['Service'].dropna().unique().tolist()) if df_temp is not None and 'Service' in df_temp.columns else ['All']
+    selected_services = st.sidebar.multiselect(
+        "☁️ Cloud Service",
+        services,
+        default=['All'],
+        help="Filter by AWS service type (EC2, S3, RDS, etc.)"
+    )
+    
+    # Region filter
+    regions = ['All'] + sorted(df_temp['Region'].dropna().unique().tolist()) if df_temp is not None and 'Region' in df_temp.columns else ['All']
+    selected_regions = st.sidebar.multiselect(
+        "🌐 Region",
+        regions,
+        default=['All'],
+        help="Filter by AWS region"
+    )
+    
+    st.sidebar.markdown("**Operational Filters:**")
+    
+    # CreatedBy filter
+    created_by_options = ['All'] + sorted(df_temp['CreatedBy'].dropna().unique().tolist()) if df_temp is not None and 'CreatedBy' in df_temp.columns else ['All']
+    selected_created_by = st.sidebar.multiselect(
+        "⚙️ Created By",
+        created_by_options,
+        default=['All'],
+        help="Filter by creation method (Terraform, Jenkins, Manual, etc.)"
+    )
+    
+    # Tagging status filter
+    tagging_status = st.sidebar.selectbox(
+        "🏷️ Tagging Status",
+        ['All', 'Tagged Only', 'Untagged Only'],
+        help="Filter by tagging compliance status"
+    )
+    
+    st.sidebar.markdown("**Financial Filters:**")
+    
+    # Cost range filter - Set to highest cost in data + 1
+    if df_temp is not None and 'MonthlyCostUSD' in df_temp.columns:
+        min_cost = float(df_temp['MonthlyCostUSD'].min())  # Use actual minimum from data
+        max_cost = float(df_temp['MonthlyCostUSD'].max()) + 1.0  # Highest cost + 1
+        
+        # Check for NaN values and show count
+        nan_count = df_temp['MonthlyCostUSD'].isna().sum()
+        
+        cost_range = st.sidebar.slider(
+            "💰 Cost Range (USD/month)",
+            min_value=min_cost,
+            max_value=max_cost,
+            value=(min_cost, max_cost),
+            step=5.0,  # Smaller step for finer control
+            help=f"Filter by monthly cost range (${min_cost:.0f} - ${max_cost:.0f})"
+        )
+        
+        # Checkbox to include NaN values
+        if nan_count > 0:
+            include_nan_costs = st.sidebar.checkbox(
+                f"📊 Include resources with missing costs ({nan_count} resources)",
+                value=False,
+                help=f"Include {nan_count} resources that have no cost data (NaN values)"
+            )
+            
+            # Show summary of missing data issues with link to analytics page
+            total_missing_fields = sum(1 for col in df_temp.columns if df_temp[col].isna().sum() > 0)
+            st.sidebar.info(f"🔍 {total_missing_fields} fields have missing data - Use 'Missing Data Analytics' page for detailed analysis")
+        else:
+            include_nan_costs = False
+            st.sidebar.success("✅ All resources have valid cost data")
+    else:
+        cost_range = (25.0, 301.0)  # Default based on current data range
+        include_nan_costs = False
+    
+    # Owner filter (for accountability)
+    owners = ['All'] + sorted(df_temp['Owner'].dropna().unique().tolist()) if df_temp is not None and 'Owner' in df_temp.columns else ['All']
+    selected_owners = st.sidebar.multiselect(
+        "👤 Resource Owner",
+        owners[:20] if len(owners) > 20 else owners,  # Limit to 20 for UI performance
+        default=['All'],
+        help="Filter by resource owner"
+    )
+    
+    # Cost Center filter
+    cost_centers = ['All'] + sorted(df_temp['CostCenter'].dropna().unique().tolist()) if df_temp is not None and 'CostCenter' in df_temp.columns else ['All']
+    selected_cost_centers = st.sidebar.multiselect(
+        "💼 Cost Center",
+        cost_centers,
+        default=['All'],
+        help="Filter by accounting cost center"
+    )
+    
+    # Preset Filters for Common Use Cases
+    st.sidebar.markdown("**Quick Filter Presets:**")
+    col1, col2 = st.sidebar.columns(2)
+    
+    with col1:
+        if st.button("🚨 Critical Issues", help="Show untagged production resources"):
+            selected_environments = ['Prod']
+            tagging_status = 'Untagged Only'
+            st.rerun()
+            
+        if st.button("🏭 Production Only", help="Show all production resources"):
+            selected_environments = ['Prod']
+            st.rerun()
+    
+    with col2:
+        if st.button("🔧 Manual Resources", help="Show manually created resources"):
+            selected_created_by = ['Manual']
+            st.rerun()
+            
+        if st.button("💸 High Cost", help="Show resources costing >$100/month"):
+            # This will be handled in the main function
+            pass
+    
+    # Export filtered data feature
+    st.sidebar.markdown("**📁 Data Export:**")
+    if st.sidebar.button("📋 Export Filtered Data", help="Download current filtered dataset as CSV"):
+        # This will be handled in the main function with session state
+        st.session_state.export_requested = True
+    
+    # Reset filters button
+    st.sidebar.markdown("---")
+    if st.sidebar.button("🔄 Reset All Filters"):
+        st.rerun()
+    
+    # Show filter summary
+    active_filters = []
+    if 'All' not in selected_departments and selected_departments:
+        active_filters.append(f"Dept: {len(selected_departments)}")
+    if 'All' not in selected_projects and selected_projects:
+        active_filters.append(f"Proj: {len(selected_projects)}")
+    if 'All' not in selected_environments and selected_environments:
+        active_filters.append(f"Env: {len(selected_environments)}")
+    if 'All' not in selected_services and selected_services:
+        active_filters.append(f"Svc: {len(selected_services)}")
+    if 'All' not in selected_regions and selected_regions:
+        active_filters.append(f"Reg: {len(selected_regions)}")
+    if 'All' not in selected_created_by and selected_created_by:
+        active_filters.append(f"Created: {len(selected_created_by)}")
+    if tagging_status != 'All':
+        active_filters.append(f"Tags: {tagging_status}")
+    if cost_range != (min_cost, max_cost):
+        cost_filter_text = f"Cost: ${cost_range[0]:.0f}-{cost_range[1]:.0f}"
+        if include_nan_costs:
+            cost_filter_text += " + NaN"
+        active_filters.append(cost_filter_text)
+    elif include_nan_costs:
+        active_filters.append("Cost: Include NaN values")
+        
+    if active_filters:
+        st.sidebar.success(f"🎯 **{len(active_filters)} Active Filters**")
+        for filter_desc in active_filters:
+            st.sidebar.write(f"• {filter_desc}")
+    else:
+        st.sidebar.info("📋 No filters applied - showing all data")
+    
+    st.sidebar.markdown("---")
+    
+    # --- Data Loading & Filtering ---
     df_original = load_data("./data/cloudmart_multi_account_cleaned.csv")
     if df_original is None:
         st.error("❌ Could not load CloudMart dataset. Check file path.")
         st.stop()
     
     # Apply CHUNK 1 validation with duplicate handling preference
-    df_clean, metrics = validate_cloudmart_data(df_original, remove_duplicates=remove_duplicates)
-    if df_clean is None:
+    df_validated, metrics = validate_cloudmart_data(df_original, remove_duplicates=remove_duplicates)
+    if df_validated is None:
         st.error("❌ Data validation failed. Check data quality.")
+        st.stop()
+    
+    # Apply advanced filters to the validated data
+    df_clean = apply_advanced_filters(
+        df_validated,
+        selected_departments,
+        selected_projects, 
+        selected_environments,
+        selected_services,
+        selected_regions,
+        selected_created_by,
+        selected_owners,
+        selected_cost_centers,
+        tagging_status,
+        cost_range,
+        include_nan_costs
+    )
+    
+    # Update metrics with filtered data info
+    if len(df_clean) != len(df_validated):
+        filtered_count = len(df_validated) - len(df_clean)
+        st.info(f"🎯 Applied filters: Showing {len(df_clean):,} of {len(df_validated):,} resources ({filtered_count:,} filtered out)")
+    
+    # Recalculate key metrics for filtered data
+    if len(df_clean) > 0:
+        total_resources = len(df_clean)
+        tagged_resources = len(df_clean[df_clean['Tagged'] == 'Yes'])
+        compliance_rate = (tagged_resources / total_resources * 100) if total_resources > 0 else 0
+        total_cost = df_clean['MonthlyCostUSD'].sum()
+        
+        # Update metrics for filtered view
+        metrics.update({
+            'total_resources': total_resources,
+            'compliance_rate': compliance_rate,
+            'total_monthly_cost': total_cost
+        })
+        
+        # Handle data export if requested
+        if hasattr(st.session_state, 'export_requested') and st.session_state.export_requested:
+            timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+            export_filename = f"cloudmart_filtered_data_{timestamp}.csv"
+            
+            # Create download button
+            csv_data = df_clean.to_csv(index=False)
+            st.download_button(
+                label="⬇️ Download Filtered Data",
+                data=csv_data,
+                file_name=export_filename,
+                mime="text/csv",
+                help=f"Download {len(df_clean)} filtered records as CSV"
+            )
+            st.success(f"📁 Ready to download {len(df_clean):,} filtered records!")
+            
+            # Reset the export flag
+            st.session_state.export_requested = False
+            
+    else:
+        st.warning("⚠️ No resources match the selected filters. Please adjust your filter criteria.")
         st.stop()
     
     # --- Page Routing ---
@@ -751,6 +1417,8 @@ def main():
         show_compliance_analysis_page(df_clean, metrics)
     elif page == "🔧 Remediation":
         show_remediation_workflow_page(df_clean)
+    elif page == "🔍 Missing Data Analytics":
+        show_nan_analytics_modal(df_original)
     elif page == "📋 Reports":
         show_reports_page(df_clean, metrics)
 
